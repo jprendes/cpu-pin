@@ -56,10 +56,15 @@ pub fn cpus() -> Result<Vec<CpuInfo>, Error> {
 }
 
 /// Pin the current thread to the specified logical CPU.
-pub fn pin_cpu(cpu_id: usize) -> Result<(), Error> {
+pub fn validate_cpu_id(cpu_id: usize) -> Result<(), Error> {
     if cpu_id >= usize::BITS as usize {
         return Err(Error::InvalidCpuId(cpu_id));
     }
+    Ok(())
+}
+
+pub fn pin_cpu(cpu_id: usize) -> Result<(), Error> {
+    validate_cpu_id(cpu_id)?;
 
     unsafe {
         let thread = GetCurrentThread();

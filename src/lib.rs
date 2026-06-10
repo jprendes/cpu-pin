@@ -7,6 +7,7 @@
 //! - Mapping of logical CPUs (hardware threads) to physical cores
 //! - Per-core maximum frequency information (where available)
 //! - Thread pinning to specific logical CPUs
+//! - Spawning child processes with CPU affinity pre-set ([`PinnedCommand`] trait)
 //!
 //! ## Platform Support
 //!
@@ -38,10 +39,27 @@
 //!     pin_cpu(p_core.logical_cpus[0]).unwrap();
 //! }
 //! ```
+//!
+//! ### Spawn a process pinned to a CPU
+//!
+//! ```no_run
+//! use std::process::Command;
+//! use cpu_pin::{topology, PinnedCommand};
+//!
+//! let topo = topology().unwrap();
+//! let cpu = topo.best_cores()[0].logical_cpus[0];
+//!
+//! let mut child = Command::new("my-program")
+//!     .spawn_pinned(cpu)
+//!     .unwrap();
+//! child.wait().unwrap();
+//! ```
 
+mod pinned_command;
 mod types;
 
 use once_cell::sync::OnceCell;
+pub use pinned_command::PinnedCommand;
 pub use types::{CoreType, CpuInfo, CpuTopology, Error};
 
 #[cfg(target_os = "linux")]
@@ -199,6 +217,124 @@ mod tests {
     fn pin_to_invalid_cpu_fails() {
         let result = pin_cpu(99999);
         assert!(result.is_err());
+    }
+
+    #[test]
+    #[cfg(any(target_os = "linux", target_os = "windows"))] // "macOS pinning is a no-op"
+    fn spawn_pinned_runs_on_correct_cpu() {
+        use std::process::Command;
+
+        let topo = topology().unwrap();
+        let lp = topo
+            .cores
+            .last()
+            .unwrap()
+            .logical_cpus
+            .last()
+            .copied()
+            .unwrap();
+
+        // Spawn the test binary itself, running the ignored helper test pinned to `lp`
+        let test_bin = std::env::current_exe().unwrap();
+        let output = Command::new(&test_bin)
+            .args([
+                "--exact",
+                "tests::report_cpu_affinity",
+                "--ignored",
+                "--nocapture",
+            ])
+            .stdout(std::process::Stdio::piped())
+            .spawn_pinned(lp)
+            .unwrap()
+            .wait_with_output()
+            .unwrap();
+
+        assert!(
+            output.status.success(),
+            "helper test failed: {:?}",
+            output.status
+        );
+        let stdout = String::from_utf8_lossy(&output.stdout);
+
+        // The helper prints "CPU_AFFINITY=<list>"
+        let expected = format!("CPU_AFFINITY={lp}\n");
+        println!("Expected to find: {expected}");
+        println!("Full output:\n{stdout}");
+        assert!(
+            stdout.contains(&expected),
+            "expected CPU {lp} in affinity, got: {stdout}"
+        );
+    }
+
+    /// Helper test that reports its own CPU affinity. Not run normally.
+    #[test]
+    #[ignore]
+    fn report_cpu_affinity() {
+        #[cfg(target_os = "linux")]
+        {
+            let content = std::fs::read_to_string("/proc/self/status").unwrap();
+            let line = content
+                .lines()
+                .find(|l| l.starts_with("Cpus_allowed_list:"))
+                .unwrap();
+            let list = line.split(':').nth(1).unwrap().trim();
+            println!("CPU_AFFINITY={list}");
+        }
+
+        #[cfg(target_os = "macos")]
+        {
+            // macOS doesn't support hard affinity
+            // report something that would never match
+            println!("CPU_AFFINITY=<unknown>");
+        }
+
+        #[cfg(windows)]
+        {
+            use ::windows::Win32::System::Threading::{GetCurrentProcess, GetProcessAffinityMask};
+            let mut process_mask: usize = 0;
+            let mut system_mask: usize = 0;
+            unsafe {
+                let _ = GetProcessAffinityMask(
+                    GetCurrentProcess(),
+                    &mut process_mask,
+                    &mut system_mask,
+                );
+            }
+            // Convert bitmask to comma-separated list of CPU IDs
+            let cpus: Vec<String> = (0..usize::BITS)
+                .filter(|&i| process_mask & (1 << i) != 0)
+                .map(|i| i.to_string())
+                .collect();
+            println!("CPU_AFFINITY={}", cpus.join(","));
+        }
+    }
+
+    #[test]
+    fn spawn_pinned_invalid_cpu_fails() {
+        use std::process::Command;
+
+        let result = Command::new("echo").arg("hi").spawn_pinned(99999);
+        assert!(matches!(result, Err(Error::InvalidCpuId(99999))));
+    }
+
+    #[test]
+    fn spawn_pinned_captures_output() {
+        use std::process::Command;
+
+        let topo = topology().unwrap();
+        let lp = topo.cores[0].logical_cpus[0];
+
+        let output = Command::new("echo")
+            .arg("pinned")
+            .stdout(std::process::Stdio::piped())
+            .spawn_pinned(lp)
+            .unwrap()
+            .wait_with_output()
+            .unwrap();
+
+        assert!(output.status.success());
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        assert!(stdout.contains("pinned"));
     }
 
     fn num_cpus_online() -> usize {

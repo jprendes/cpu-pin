@@ -9,6 +9,7 @@ Cross-platform CPU core type detection and thread pinning.
 - Per-core maximum frequency information (where available)
 - Hybrid topology detection (`is_hybrid`)
 - Thread pinning to specific logical CPUs
+- Spawning child processes with CPU affinity pre-set (`PinnedCommand` trait)
 
 ## Platform Support
 
@@ -59,6 +60,25 @@ if let Some(p_core) = topo.performance_cores().first() {
     pin_cpu(p_core.logical_cpus[0]).unwrap();
 }
 ```
+
+### Spawn a process pinned to a CPU
+
+```rust
+use std::process::Command;
+use cpu_pin::{topology, PinnedCommand};
+
+let topo = topology().unwrap();
+let cpu = topo.best_cores()[0].logical_cpus[0];
+
+let mut child = Command::new("my-program")
+    .spawn_pinned(cpu)
+    .unwrap();
+child.wait().unwrap();
+```
+
+On Linux and macOS, `spawn_pinned` uses `pre_exec` to call `sched_setaffinity` before
+the child executes. On Windows, the process is created suspended, its affinity mask is
+set, and then it is resumed.
 
 ## License
 

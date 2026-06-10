@@ -213,11 +213,16 @@ pub fn cpus() -> Result<Vec<CpuInfo>, Error> {
 }
 
 /// Pin the current thread to the specified logical CPU.
-pub fn pin_cpu(cpu_id: usize) -> Result<(), Error> {
+pub fn validate_cpu_id(cpu_id: usize) -> Result<(), Error> {
     let cpu_count = online_cpu_count();
     if cpu_id >= cpu_count {
         return Err(Error::InvalidCpuId(cpu_id));
     }
+    Ok(())
+}
+
+pub fn pin_cpu(cpu_id: usize) -> Result<(), Error> {
+    validate_cpu_id(cpu_id)?;
 
     unsafe {
         let mut set: libc::cpu_set_t = std::mem::zeroed();
