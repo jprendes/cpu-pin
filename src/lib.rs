@@ -268,7 +268,7 @@ mod tests {
 
     /// Helper test that reports its own CPU affinity. Not run normally.
     #[test]
-    #[ignore]
+    #[ignore = "used as target for spawn_pinned test"]
     fn report_cpu_affinity() {
         #[cfg(target_os = "linux")]
         {
@@ -324,8 +324,9 @@ mod tests {
         let topo = topology().unwrap();
         let lp = topo.cores[0].logical_cpus[0];
 
-        let output = Command::new("echo")
-            .arg("pinned")
+        let test_bin = std::env::current_exe().unwrap();
+        let output = Command::new(&test_bin)
+            .args(["--exact", "tests::print_pinned", "--ignored", "--nocapture"])
             .stdout(std::process::Stdio::piped())
             .spawn_pinned(lp)
             .unwrap()
@@ -335,6 +336,13 @@ mod tests {
         assert!(output.status.success());
         let stdout = String::from_utf8_lossy(&output.stdout);
         assert!(stdout.contains("pinned"));
+    }
+
+    /// Helper test that prints "pinned". Not run normally.
+    #[test]
+    #[ignore = "used as target for spawn_pinned test"]
+    fn print_pinned() {
+        println!("pinned");
     }
 
     fn num_cpus_online() -> usize {

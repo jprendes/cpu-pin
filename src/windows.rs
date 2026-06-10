@@ -2,7 +2,7 @@ use windows::Win32::System::SystemInformation::{
     GetLogicalProcessorInformationEx, RelationProcessorCore,
     SYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX,
 };
-use windows::Win32::System::Threading::{GetCurrentThread, SetThreadAffinityMask};
+use windows::Win32::System::Threading::{GetCurrentThread, SetThreadGroupAffinity};
 
 use crate::{CoreType, CpuInfo, Error};
 
@@ -57,7 +57,9 @@ pub fn cpus() -> Result<Vec<CpuInfo>, Error> {
 
 /// Pin the current thread to the specified logical CPU.
 pub fn validate_cpu_id(cpu_id: usize) -> Result<(), Error> {
-    if cpu_id >= usize::BITS as usize {
+    let topo = crate::topology().map_err(|_| Error::InvalidCpuId(cpu_id))?;
+    let valid = topo.cores.iter().any(|c| c.logical_cpus.contains(&cpu_id));
+    if !valid {
         return Err(Error::InvalidCpuId(cpu_id));
     }
     Ok(())
@@ -66,11 +68,18 @@ pub fn validate_cpu_id(cpu_id: usize) -> Result<(), Error> {
 pub fn pin_cpu(cpu_id: usize) -> Result<(), Error> {
     validate_cpu_id(cpu_id)?;
 
+    let group = (cpu_id / 64) as u16;
+    let bit = cpu_id % 64;
+
     unsafe {
         let thread = GetCurrentThread();
-        let mask = 1usize << cpu_id;
-        let prev = SetThreadAffinityMask(thread, mask);
-        if prev == 0 {
+        let affinity = windows::Win32::System::SystemInformation::GROUP_AFFINITY {
+            Mask: 1usize << bit,
+            Group: group,
+            Reserved: [0; 3],
+        };
+        let result = SetThreadGroupAffinity(thread, &affinity, None);
+        if !result.as_bool() {
             return Err(Error::Os(std::io::Error::last_os_error()));
         }
     }
@@ -104,7 +113,6 @@ fn get_processor_info() -> Result<Vec<PhysicalCoreRaw>, Error> {
     // Parse the variable-length entries — one per physical core
     let mut result = Vec::new();
     let mut offset = 0usize;
-    let mut global_logical_id = 0usize;
 
     while offset < buffer_size as usize {
         let entry = unsafe {
@@ -119,16 +127,16 @@ fn get_processor_info() -> Result<Vec<PhysicalCoreRaw>, Error> {
             let group_count = proc_info.GroupCount as usize;
             for g in 0..group_count {
                 let group_affinity = &proc_info.GroupMask[g];
+                let group_num = group_affinity.Group as usize;
                 let mut mask = group_affinity.Mask;
                 let mut bit_pos = 0usize;
                 while mask != 0 {
                     if mask & 1 != 0 {
-                        logical_cpus.push(global_logical_id + bit_pos);
+                        logical_cpus.push(group_num * 64 + bit_pos);
                     }
                     bit_pos += 1;
                     mask >>= 1;
                 }
-                global_logical_id += bit_pos;
             }
 
             result.push(PhysicalCoreRaw {

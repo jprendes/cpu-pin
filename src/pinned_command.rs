@@ -56,7 +56,7 @@ impl PinnedCommand for Command {
         let child = self.spawn().map_err(Error::Os)?;
 
         let handle = HANDLE(child.as_raw_handle() as _);
-        let mask = 1usize << cpu_id;
+        let mask = 1usize << (cpu_id % 64);
 
         unsafe {
             // Ignore failure — best effort pinning
