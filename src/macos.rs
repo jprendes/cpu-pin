@@ -174,16 +174,21 @@ pub fn cpus() -> Result<Vec<CpuInfo>, Error> {
     Ok(cores)
 }
 
+pub fn validate_cpu_id(cpu_id: usize) -> Result<(), Error> {
+    let cpu_count = logical_cpu_count();
+    if cpu_id >= cpu_count {
+        return Err(Error::InvalidCpuId(cpu_id));
+    }
+    Ok(())
+}
+
 /// Pin the current thread to the specified logical CPU.
 ///
 /// **Note:** macOS does not support hard CPU affinity binding.
 /// This function returns `Error::PinningNotSupported`.
 /// On macOS, use QoS classes (`pthread_set_qos_class_np`) for soft scheduling hints.
 pub fn pin_cpu(cpu_id: usize) -> Result<(), Error> {
-    let cpu_count = logical_cpu_count();
-    if cpu_id >= cpu_count {
-        return Err(Error::InvalidCpuId(cpu_id));
-    }
+    validate_cpu_id(cpu_id)?;
 
     // macOS does not support hard thread-to-CPU pinning.
     // thread_policy_set with THREAD_AFFINITY_POLICY only provides a "tag"
