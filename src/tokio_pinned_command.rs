@@ -35,9 +35,9 @@ impl PinnedCommand for Command {
         self.creation_flags(CREATE_SUSPENDED.0);
         let child = self.spawn().map_err(Error::Os)?;
 
-        if let Some(pid) = child.id() {
+        if let (Some(pid), Some(handle)) = (child.id(), child.raw_handle()) {
             unsafe {
-                crate::platform::pin_and_resume_windows(cpu_id, pid);
+                crate::platform::pin_and_resume_windows(cpu_id, handle, pid);
             }
         }
 

@@ -237,3 +237,20 @@ pub fn pin_cpu(cpu_id: usize) -> Result<(), Error> {
 
     Ok(())
 }
+
+#[cfg(test)] // only used in tests
+pub fn get_current_cpu_affinity() -> Result<Vec<usize>, Error> {
+    unsafe {
+        let mut set: libc::cpu_set_t = std::mem::zeroed();
+        let ret = libc::sched_getaffinity(0, std::mem::size_of::<libc::cpu_set_t>(), &mut set);
+        if ret != 0 {
+            return Err(Error::Os(std::io::Error::last_os_error()));
+        }
+
+        let max_cpus = libc::CPU_SETSIZE as usize;
+        let cpus = (0..max_cpus)
+            .filter(|&i| libc::CPU_ISSET(i, &set))
+            .collect();
+        Ok(cpus)
+    }
+}

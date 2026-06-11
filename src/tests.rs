@@ -151,37 +151,9 @@ fn spawn_pinned_runs_on_correct_cpu() {
 #[test]
 #[ignore = "used as target for spawn_pinned test"]
 fn report_cpu_affinity() {
-    #[cfg(target_os = "linux")]
-    {
-        let content = std::fs::read_to_string("/proc/self/status").unwrap();
-        let line = content
-            .lines()
-            .find(|l| l.starts_with("Cpus_allowed_list:"))
-            .unwrap();
-        let list = line.split(':').nth(1).unwrap().trim();
-        println!("CPU_AFFINITY={list}");
-    }
-
-    #[cfg(target_os = "macos")]
-    {
-        println!("CPU_AFFINITY=<unknown>");
-    }
-
-    #[cfg(windows)]
-    {
-        use ::windows::Win32::System::Threading::{GetCurrentProcess, GetProcessAffinityMask};
-        let mut process_mask: usize = 0;
-        let mut system_mask: usize = 0;
-        unsafe {
-            let _ =
-                GetProcessAffinityMask(GetCurrentProcess(), &mut process_mask, &mut system_mask);
-        }
-        let cpus: Vec<String> = (0..usize::BITS)
-            .filter(|&i| process_mask & (1 << i) != 0)
-            .map(|i| i.to_string())
-            .collect();
-        println!("CPU_AFFINITY={}", cpus.join(","));
-    }
+    let cpus = crate::get_current_cpu_affinity().unwrap();
+    let list: Vec<String> = cpus.iter().map(|id| id.to_string()).collect();
+    println!("CPU_AFFINITY={}", list.join(","));
 }
 
 #[test]

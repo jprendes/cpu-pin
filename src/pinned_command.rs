@@ -51,6 +51,7 @@ impl PinnedCommand for Command {
     type Child = std::process::Child;
 
     fn spawn_pinned(&mut self, cpu_id: usize) -> Result<Self::Child, Error> {
+        use std::os::windows::io::AsRawHandle;
         use std::os::windows::process::CommandExt;
 
         use windows::Win32::System::Threading::CREATE_SUSPENDED;
@@ -62,7 +63,7 @@ impl PinnedCommand for Command {
         let child = self.spawn().map_err(Error::Os)?;
 
         unsafe {
-            platform::pin_and_resume_windows(cpu_id, child.id());
+            platform::pin_and_resume_windows(cpu_id, child.as_raw_handle(), child.id());
         }
 
         Ok(child)

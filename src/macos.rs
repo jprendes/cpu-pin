@@ -196,3 +196,10 @@ pub fn pin_cpu(cpu_id: usize) -> Result<(), Error> {
     // but does NOT pin to a specific CPU.
     Err(Error::PinningNotSupported)
 }
+
+#[cfg(test)] // only used in tests
+pub fn get_current_cpu_affinity() -> Result<Vec<usize>, Error> {
+    // macOS does not support CPU affinity; report all CPUs as available.
+    let count = logical_cpu_count();
+    Ok((0..count).collect())
+}

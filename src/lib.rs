@@ -147,5 +147,21 @@ pub fn pin_cpu(cpu_id: usize) -> Result<(), Error> {
     platform::pin_cpu(cpu_id)
 }
 
+/// Get the CPU affinity of the current process as a sorted list of logical CPU IDs.
+///
+/// Returns the set of logical CPUs that the process is allowed to execute on.
+/// For example, `[0, 1, 2, 3, 8, 9, 10, 11]` means the process can run on
+/// CPUs 0–3 and 8–11.
+///
+/// On macOS, which does not support CPU affinity, this returns all CPUs.
+///
+/// # Errors
+///
+/// Returns [`Error::Os`] if the OS call fails.
+#[cfg(test)]
+fn get_current_cpu_affinity() -> Result<Vec<usize>, Error> {
+    platform::get_current_cpu_affinity()
+}
+
 #[cfg(test)]
 mod tests;

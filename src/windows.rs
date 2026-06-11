@@ -9,7 +9,8 @@ use windows::Win32::System::SystemInformation::{
     SYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX,
 };
 use windows::Win32::System::Threading::{
-    GetCurrentThread, OpenThread, ResumeThread, SetThreadGroupAffinity, THREAD_SUSPEND_RESUME,
+    GetCurrentThread, OpenThread, ResumeThread, SetProcessDefaultCpuSetMasks,
+    SetThreadGroupAffinity, THREAD_SET_INFORMATION, THREAD_SUSPEND_RESUME,
 };
 
 use crate::{CoreType, CpuInfo, Error};
@@ -84,6 +85,47 @@ pub fn pin_cpu(cpu_id: usize) -> Result<(), Error> {
     Ok(())
 }
 
+#[cfg(test)] // only used in tests
+pub fn get_current_cpu_affinity() -> Result<Vec<usize>, Error> {
+    use windows::Win32::System::Threading::{GetCurrentProcess, GetProcessDefaultCpuSetMasks};
+
+    let process = unsafe { GetCurrentProcess() };
+    let mut count: u16 = 0;
+    unsafe {
+        let _ = GetProcessDefaultCpuSetMasks(process, None, &mut count);
+    }
+
+    if count == 0 {
+        // No CPU set masks configured — all CPUs are available.
+        let topo = crate::topology()?;
+        let mut all_cpus: Vec<usize> = topo
+            .cores
+            .iter()
+            .flat_map(|c| c.logical_cpus.iter().copied())
+            .collect();
+        all_cpus.sort();
+        return Ok(all_cpus);
+    }
+
+    let mut masks =
+        vec![windows::Win32::System::SystemInformation::GROUP_AFFINITY::default(); count as usize];
+    unsafe {
+        let _ = GetProcessDefaultCpuSetMasks(process, Some(&mut masks), &mut count);
+    }
+
+    let mut cpus: Vec<usize> = masks
+        .iter()
+        .flat_map(|m| {
+            let group = m.Group as usize;
+            (0..usize::BITS as usize)
+                .filter(move |&i| m.Mask & (1 << i) != 0)
+                .map(move |i| group * 64 + i)
+        })
+        .collect();
+    cpus.sort();
+    Ok(cpus)
+}
+
 /// Pin a thread to the specified logical CPU.
 ///
 /// # Safety
@@ -109,10 +151,21 @@ unsafe fn pin_thread_to_cpu(thread: RawHandle, cpu_id: usize) -> Result<(), Erro
 /// # Safety
 ///
 /// The process identified by `pid` must have been created suspended.
-pub(crate) unsafe fn pin_and_resume_windows(cpu_id: usize, pid: u32) {
+/// `process_handle` must be a valid handle to the process with PROCESS_SET_INFORMATION access.
+pub(crate) unsafe fn pin_and_resume_windows(cpu_id: usize, process_handle: RawHandle, pid: u32) {
+    let group = (cpu_id / 64) as u16;
+    let bit = cpu_id % 64;
+    let affinity = windows::Win32::System::SystemInformation::GROUP_AFFINITY {
+        Mask: 1usize << bit,
+        Group: group,
+        Reserved: [0; 3],
+    };
+    // Set process-level CPU affinity (group-aware, Windows 11+)
+    let _ = SetProcessDefaultCpuSetMasks(HANDLE(process_handle as _), Some(&[affinity]));
+
     if let Some(thread) = find_main_thread_handle(pid) {
         let raw = thread.as_raw_handle();
-        // Best effort pinning
+        // Best effort thread pinning
         let _ = pin_thread_to_cpu(raw, cpu_id);
         ResumeThread(HANDLE(raw as _));
     }
@@ -135,7 +188,12 @@ fn find_main_thread_handle(pid: u32) -> Option<OwnedHandle> {
         loop {
             if entry.th32OwnerProcessID == pid {
                 let _ = windows::Win32::Foundation::CloseHandle(snapshot);
-                let thread = OpenThread(THREAD_SUSPEND_RESUME, false, entry.th32ThreadID).ok()?;
+                let thread = OpenThread(
+                    THREAD_SUSPEND_RESUME | THREAD_SET_INFORMATION,
+                    false,
+                    entry.th32ThreadID,
+                )
+                .ok()?;
                 return Some(OwnedHandle::from_raw_handle(thread.0 as RawHandle));
             }
             if Thread32Next(snapshot, &mut entry).is_err() {
