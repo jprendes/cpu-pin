@@ -1,8 +1,16 @@
+use std::os::windows::io::{AsRawHandle, OwnedHandle, RawHandle};
+
+use windows::Win32::Foundation::HANDLE;
+use windows::Win32::System::Diagnostics::ToolHelp::{
+    CreateToolhelp32Snapshot, Thread32First, Thread32Next, TH32CS_SNAPTHREAD, THREADENTRY32,
+};
 use windows::Win32::System::SystemInformation::{
     GetLogicalProcessorInformationEx, RelationProcessorCore,
     SYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX,
 };
-use windows::Win32::System::Threading::{GetCurrentThread, SetThreadGroupAffinity};
+use windows::Win32::System::Threading::{
+    GetCurrentThread, OpenThread, ResumeThread, SetThreadGroupAffinity, THREAD_SUSPEND_RESUME,
+};
 
 use crate::{CoreType, CpuInfo, Error};
 
@@ -68,23 +76,75 @@ pub fn validate_cpu_id(cpu_id: usize) -> Result<(), Error> {
 pub fn pin_cpu(cpu_id: usize) -> Result<(), Error> {
     validate_cpu_id(cpu_id)?;
 
-    let group = (cpu_id / 64) as u16;
-    let bit = cpu_id % 64;
-
     unsafe {
         let thread = GetCurrentThread();
-        let affinity = windows::Win32::System::SystemInformation::GROUP_AFFINITY {
-            Mask: 1usize << bit,
-            Group: group,
-            Reserved: [0; 3],
-        };
-        let result = SetThreadGroupAffinity(thread, &affinity, None);
-        if !result.as_bool() {
-            return Err(Error::Os(std::io::Error::last_os_error()));
-        }
+        pin_thread_to_cpu(thread.0 as RawHandle, cpu_id)?;
     }
 
     Ok(())
+}
+
+/// Pin a thread to the specified logical CPU.
+///
+/// # Safety
+///
+/// `thread` must be a valid thread handle with permission to set affinity.
+unsafe fn pin_thread_to_cpu(thread: RawHandle, cpu_id: usize) -> Result<(), Error> {
+    let group = (cpu_id / 64) as u16;
+    let bit = cpu_id % 64;
+    let affinity = windows::Win32::System::SystemInformation::GROUP_AFFINITY {
+        Mask: 1usize << bit,
+        Group: group,
+        Reserved: [0; 3],
+    };
+    let result = SetThreadGroupAffinity(HANDLE(thread as _), &affinity, None);
+    if !result.as_bool() {
+        return Err(Error::Os(std::io::Error::last_os_error()));
+    }
+    Ok(())
+}
+
+/// Set CPU affinity on a suspended Windows process and resume its main thread.
+///
+/// # Safety
+///
+/// The process identified by `pid` must have been created suspended.
+pub(crate) unsafe fn pin_and_resume_windows(cpu_id: usize, pid: u32) {
+    if let Some(thread) = find_main_thread_handle(pid) {
+        let raw = thread.as_raw_handle();
+        // Best effort pinning
+        let _ = pin_thread_to_cpu(raw, cpu_id);
+        ResumeThread(HANDLE(raw as _));
+    }
+}
+
+/// Find the main thread of a process and return an owned handle to it.
+fn find_main_thread_handle(pid: u32) -> Option<OwnedHandle> {
+    use std::os::windows::io::FromRawHandle;
+
+    unsafe {
+        let snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, 0).ok()?;
+        let mut entry = THREADENTRY32 {
+            dwSize: std::mem::size_of::<THREADENTRY32>() as u32,
+            ..Default::default()
+        };
+        if Thread32First(snapshot, &mut entry).is_err() {
+            let _ = windows::Win32::Foundation::CloseHandle(snapshot);
+            return None;
+        }
+        loop {
+            if entry.th32OwnerProcessID == pid {
+                let _ = windows::Win32::Foundation::CloseHandle(snapshot);
+                let thread = OpenThread(THREAD_SUSPEND_RESUME, false, entry.th32ThreadID).ok()?;
+                return Some(OwnedHandle::from_raw_handle(thread.0 as RawHandle));
+            }
+            if Thread32Next(snapshot, &mut entry).is_err() {
+                break;
+            }
+        }
+        let _ = windows::Win32::Foundation::CloseHandle(snapshot);
+        None
+    }
 }
 
 /// Query processor information from Windows, returning one entry per physical core.

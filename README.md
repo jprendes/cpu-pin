@@ -21,6 +21,12 @@ Cross-platform CPU core type detection and thread pinning.
 | Windows x86 | `EfficiencyClass` via `GetLogicalProcessorInformationEx` | `SetThreadAffinityMask` |
 | Windows ARM | `EfficiencyClass` via `GetLogicalProcessorInformationEx` | `SetThreadAffinityMask` |
 
+## Features
+
+| Feature | Description |
+|---------|-------------|
+| `tokio` | Implements `PinnedCommand` for `tokio::process::Command` |
+
 ## Usage
 
 Add to your `Cargo.toml`:
@@ -74,6 +80,28 @@ let mut child = Command::new("my-program")
     .spawn_pinned(cpu)
     .unwrap();
 child.wait().unwrap();
+```
+
+### Spawn a process pinned to a CPU (tokio)
+
+Enable the `tokio` feature:
+
+```toml
+[dependencies]
+cpu-pin = { version = "0.1", features = ["tokio"] }
+```
+
+```rust
+use tokio::process::Command;
+use cpu_pin::{topology, PinnedCommand};
+
+let topo = topology().unwrap();
+let cpu = topo.best_cores()[0].logical_cpus[0];
+
+let child = Command::new("my-program")
+    .spawn_pinned(cpu)
+    .unwrap();
+let output = child.wait_with_output().await.unwrap();
 ```
 
 On Linux and macOS, `spawn_pinned` uses `pre_exec` to call `sched_setaffinity` before

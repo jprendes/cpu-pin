@@ -29,7 +29,9 @@ jobs:
           components: clippy
       - run: cargo +nightly fmt --check
       - run: cargo test
+      - run: cargo test --features tokio
       - run: cargo clippy -- -D warnings
+      - run: cargo clippy --features tokio -- -D warnings
       - run: cargo run --example detect
       - run: cargo run --example benchmark
         if: matrix.run-benchmark

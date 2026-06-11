@@ -1,10 +1,16 @@
-use std::process::{Child, Command};
+use std::process::Command;
 
 use crate::{platform, Error};
 
 /// Extension trait for [`Command`] that adds the ability to spawn a process
 /// pinned to a specific logical CPU.
+///
+/// Implemented for [`std::process::Command`] and, with the `tokio` feature,
+/// for [`tokio::process::Command`].
 pub trait PinnedCommand {
+    /// The child process type returned on success.
+    type Child;
+
     /// Spawn the command with CPU affinity set to the specified logical CPU.
     ///
     /// The child process will be pinned to `cpu_id` before it begins executing.
@@ -15,12 +21,14 @@ pub trait PinnedCommand {
     ///
     /// - [`Error::InvalidCpuId`] if `cpu_id` does not correspond to a valid logical CPU.
     /// - [`Error::Os`] if spawning the process fails.
-    fn spawn_pinned(&mut self, cpu_id: usize) -> Result<Child, Error>;
+    fn spawn_pinned(&mut self, cpu_id: usize) -> Result<Self::Child, Error>;
 }
 
 #[cfg(unix)]
 impl PinnedCommand for Command {
-    fn spawn_pinned(&mut self, cpu_id: usize) -> Result<Child, Error> {
+    type Child = std::process::Child;
+
+    fn spawn_pinned(&mut self, cpu_id: usize) -> Result<Self::Child, Error> {
         use std::os::unix::process::CommandExt;
 
         // Validate cpu_id before spawning
@@ -40,14 +48,12 @@ impl PinnedCommand for Command {
 
 #[cfg(windows)]
 impl PinnedCommand for Command {
-    fn spawn_pinned(&mut self, cpu_id: usize) -> Result<Child, Error> {
-        use std::os::windows::io::AsRawHandle;
+    type Child = std::process::Child;
+
+    fn spawn_pinned(&mut self, cpu_id: usize) -> Result<Self::Child, Error> {
         use std::os::windows::process::CommandExt;
 
-        use windows::Win32::Foundation::HANDLE;
-        use windows::Win32::System::Threading::{
-            ResumeThread, SetProcessAffinityMask, CREATE_SUSPENDED,
-        };
+        use windows::Win32::System::Threading::CREATE_SUSPENDED;
 
         platform::validate_cpu_id(cpu_id)?;
 
@@ -55,45 +61,8 @@ impl PinnedCommand for Command {
         self.creation_flags(CREATE_SUSPENDED.0);
         let child = self.spawn().map_err(Error::Os)?;
 
-        let handle = HANDLE(child.as_raw_handle() as _);
-        let mask = 1usize << (cpu_id % 64);
-
         unsafe {
-            // Ignore failure — best effort pinning
-            let _ = SetProcessAffinityMask(handle, mask);
-
-            // Resume the main thread
-            use windows::Win32::System::Diagnostics::ToolHelp::{
-                CreateToolhelp32Snapshot, Thread32First, Thread32Next, TH32CS_SNAPTHREAD,
-                THREADENTRY32,
-            };
-            use windows::Win32::System::Threading::{OpenThread, THREAD_SUSPEND_RESUME};
-
-            let pid = child.id();
-            let snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, 0);
-            if let Ok(snapshot) = snapshot {
-                let mut entry = THREADENTRY32 {
-                    dwSize: std::mem::size_of::<THREADENTRY32>() as u32,
-                    ..Default::default()
-                };
-                if Thread32First(snapshot, &mut entry).is_ok() {
-                    loop {
-                        if entry.th32OwnerProcessID == pid {
-                            if let Ok(thread) =
-                                OpenThread(THREAD_SUSPEND_RESUME, false, entry.th32ThreadID)
-                            {
-                                ResumeThread(thread);
-                                let _ = windows::Win32::Foundation::CloseHandle(thread);
-                            }
-                            break;
-                        }
-                        if Thread32Next(snapshot, &mut entry).is_err() {
-                            break;
-                        }
-                    }
-                }
-                let _ = windows::Win32::Foundation::CloseHandle(snapshot);
-            }
+            platform::pin_and_resume_windows(cpu_id, child.id());
         }
 
         Ok(child)
