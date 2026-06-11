@@ -13,9 +13,13 @@ jobs:
         include:
           - os: ubuntu-latest
             run-benchmark: true
+          - os: ubuntu-24.04-arm
+            run-benchmark: true
           - os: macos-latest
             run-benchmark: false
           - os: windows-latest
+            run-benchmark: true
+          - os: windows-11-arm
             run-benchmark: true
     runs-on: ${{ matrix.os }}
     steps:
