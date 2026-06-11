@@ -70,7 +70,8 @@
 //!
 //! Requires the `tokio` feature.
 //!
-//! ```no_run
+#![cfg_attr(feature = "tokio", doc = " ```no_run")]
+#![cfg_attr(not(feature = "tokio"), doc = " ```no_run,ignore")]
 //! use tokio::process::Command;
 //! use cpu_pin::{topology, PinnedCommand};
 //!
